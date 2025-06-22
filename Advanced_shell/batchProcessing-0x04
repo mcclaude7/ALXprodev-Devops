@@ -1,0 +1,206 @@
+#!/bin/bash
+
+# Script for parallel Pokemon data fetching
+# Fetches data for multiple Pokemon simultaneously using background processes
+
+# Function to fetch individual Pokemon data
+fetch_single_pokemon() {
+    local pokemon_name="$1"
+    local pid="$$"
+    local api_url="https://pokeapi.co/api/v2/pokemon/${pokemon_name,,}"
+    local output_file="${pokemon_name,,}.json"
+    local log_file="${pokemon_name,,}.log"
+    
+    echo "[PID: $pid] Starting fetch for: $pokemon_name" > "$log_file"
+    
+    # Fetch data with timeout
+    if curl -s --connect-timeout 15 --max-time 45 "$api_url" > "$output_file" 2>>"$log_file"; then
+        # Validate JSON response
+        if jq -e '.name' "$output_file" >/dev/null 2>&1; then
+            echo "[PID: $pid] ✓ Successfully fetched: $pokemon_name" >> "$log_file"
+            echo "SUCCESS:$pokemon_name" > "${pokemon_name,,}.status"
+        else
+            echo "[PID: $pid] ✗ Invalid JSON for: $pokemon_name" >> "$log_file"
+            echo "ERROR:$pokemon_name:Invalid JSON" > "${pokemon_name,,}.status"
+            rm -f "$output_file"
+        fi
+    else
+        echo "[PID: $pid] ✗ Failed to fetch: $pokemon_name" >> "$log_file"
+        echo "ERROR:$pokemon_name:Network error" > "${pokemon_name,,}.status"
+        rm -f "$output_file"
+    fi
+}
+
+# Function to monitor background processes
+monitor_processes() {
+    local pids=("$@")
+    local completed=0
+    local total=${#pids[@]}
+    
+    echo "Monitoring $total background processes..."
+    
+    while [ $completed -lt $total ]; do
+        completed=0
+        for pid in "${pids[@]}"; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                completed=$((completed + 1))
+            fi
+        done
+        
+        echo -ne "\rProgress: $completed/$total processes completed"
+        sleep 1
+    done
+    echo
+}
+
+# Function to wait for all processes and collect results
+wait_and_collect_results() {
+    local pokemon_list=("$@")
+    local pids=()
+    
+    echo "Starting parallel data fetching..."
+    echo "Pokemon to fetch: ${pokemon_list[*]}"
+    echo
+    
+    # Start background processes
+    for pokemon in "${pokemon_list[@]}"; do
+        fetch_single_pokemon "$pokemon" &
+        local pid=$!
+        pids+=("$pid")
+        echo "Started background process for $pokemon (PID: $pid)"
+    done
+    
+    echo
+    echo "All processes started. Waiting for completion..."
+    
+    # Monitor processes with progress indicator
+    monitor_processes "${pids[@]}"
+    
+    # Wait for all processes to complete
+    for pid in "${pids[@]}"; do
+        wait "$pid"
+    done
+    
+    echo "All background processes completed!"
+    echo
+}
+
+# Function to generate summary report
+generate_summary() {
+    local pokemon_list=("$@")
+    local success_count=0
+    local error_count=0
+    
+    echo "=== Parallel Processing Summary ==="
+    echo
+    
+    for pokemon in "${pokemon_list[@]}"; do
+        local status_file="${pokemon,,}.status"
+        if [ -f "$status_file" ]; then
+            local status=$(cat "$status_file")
+            if [[ "$status" == SUCCESS:* ]]; then
+                echo "✓ $pokemon: Success"
+                success_count=$((success_count + 1))
+            else
+                echo "✗ $pokemon: ${status#ERROR:*:}"
+                error_count=$((error_count + 1))
+            fi
+        else
+            echo "? $pokemon: Unknown status"
+            error_count=$((error_count + 1))
+        fi
+    done
+    
+    echo
+    echo "Results:"
+    echo "✓ Successful: $success_count"
+    echo "✗ Failed: $error_count"
+    echo "📁 JSON files created: $(ls -1 *.json 2>/dev/null | wc -l)"
+    
+    # Show file sizes
+    echo
+    echo "Generated files:"
+    for pokemon in "${pokemon_list[@]}"; do
+        local json_file="${pokemon,,}.json"
+        if [ -f "$json_file" ]; then
+            local file_size=$(wc -c < "$json_file")
+            echo "  $json_file: ${file_size} bytes"
+        fi
+    done
+}
+
+# Function to cleanup temporary files
+cleanup_temp_files() {
+    local pokemon_list=("$@")
+    
+    echo
+    echo "Cleaning up temporary files..."
+    
+    for pokemon in "${pokemon_list[@]}"; do
+        rm -f "${pokemon,,}.log" "${pokemon,,}.status"
+    done
+    
+    echo "Cleanup completed."
+}
+
+# Main execution function
+main() {
+    # Required Pokemon list as specified in the task
+    local pokemon_list=("Bulbasaur" "Ivysaur" "Venusaur" "Charmander" "Charmeleon")
+    
+    echo "=== Parallel Pokemon Data Fetcher ==="
+    echo "Fetching data for: ${pokemon_list[*]}"
+    echo "Using parallel processing with background processes"
+    echo
+    
+    # Record start time
+    local start_time=$(date +%s)
+    
+    # Execute parallel fetching
+    wait_and_collect_results "${pokemon_list[@]}"
+    
+    # Calculate execution time
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    
+    # Generate summary
+    generate_summary "${pokemon_list[@]}"
+    
+    echo
+    echo "Total execution time: ${duration} seconds"
+    
+    # Cleanup
+    cleanup_temp_files "${pokemon_list[@]}"
+}
+
+# Check dependencies
+check_dependencies() {
+    local missing_deps=()
+    
+    for cmd in curl jq; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_deps+=("$cmd")
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        echo "✗ ERROR: Missing dependencies: ${missing_deps[*]}" >&2
+        echo "Please install the required tools." >&2
+        exit 1
+    fi
+}
+
+# Signal handler for cleanup on interruption
+cleanup_on_exit() {
+    echo
+    echo "Received interrupt signal. Cleaning up..."
+    jobs -p | xargs -r kill
+    exit 1
+}
+
+# Set up signal handlers
+trap cleanup_on_exit INT TERM
+
+# Run the script
+check_dependencies
+main
