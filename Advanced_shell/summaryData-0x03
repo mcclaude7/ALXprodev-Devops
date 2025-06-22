@@ -1,44 +1,74 @@
 #!/bin/bash
 
-# Output CSV file
+# Script to generate a comprehensive Pokémon report
+# Reads JSON files, creates CSV, and calculates averages using awk
+
+# Define the output CSV file
 output_file="pokemon_report.csv"
 
-# Write CSV header
+# Create CSV header
 echo "Name,Height (m),Weight (kg)" > "$output_file"
 
-# Variables to accumulate totals for averages
-total_height=0
-total_weight=0
-count=0
+# Initialize temporary file for calculations
+temp_data=$(mktemp)
 
-# Loop over each JSON file in pokemon_data directory
-for file in pokemon_data/*.json; do
-    # Extract fields using jq
-    name=$(jq -r '.name' "$file")
-    height_dm=$(jq '.height' "$file")    # height in decimeters
-    weight_hg=$(jq '.weight' "$file")    # weight in hectograms
-
-    # Convert height to meters and weight to kg
-    height=$(awk "BEGIN {printf \"%.2f\", $height_dm / 10}")
-    weight=$(awk "BEGIN {printf \"%.2f\", $weight_hg / 10}")
-
-    # Append to CSV
-    echo "$name,$height,$weight" >> "$output_file"
-
-    # Accumulate totals
-    total_height=$(awk "BEGIN {print $total_height + $height}")
-    total_weight=$(awk "BEGIN {print $total_weight + $weight}")
-    count=$((count + 1))
+# Process all JSON files in the current directory
+for json_file in *.json; do
+    if [ -f "$json_file" ] && [ "$json_file" != "*.json" ]; then
+        # Extract data using jq
+        name=$(jq -r '.name' "$json_file" 2>/dev/null)
+        height=$(jq -r '.height' "$json_file" 2>/dev/null)
+        weight=$(jq -r '.weight' "$json_file" 2>/dev/null)
+        
+        # Check if extraction was successful and not null/empty
+        if [ "$name" != "null" ] && [ "$height" != "null" ] && [ "$weight" != "null" ] && [ -n "$name" ] && [ -n "$height" ] && [ -n "$weight" ]; then
+            # Convert height from decimeters to meters and weight from hectograms to kg using awk
+            height_m=$(echo "$height" | awk '{printf "%.1f", $1/10}')
+            weight_kg=$(echo "$weight" | awk '{printf "%.1f", $1/10}')
+            
+            # Clean any unwanted characters using sed
+            height_m=$(echo "$height_m" | sed 's/[[:space:]]//g')
+            weight_kg=$(echo "$weight_kg" | sed 's/[[:space:]]//g')
+            
+            # Capitalize first letter of name using sed
+            formatted_name=$(echo "$name" | sed 's/\(.\)/\U\1/' | sed 's/\(.\)\(.*\)/\1\L\2/')
+            
+            # Add to CSV
+            echo "$formatted_name,$height_m,$weight_kg" >> "$output_file"
+            
+            # Add to temp file for average calculation
+            echo "$height_m $weight_kg" >> "$temp_data"
+        fi
+    fi
 done
 
-# Calculate averages
-avg_height=$(awk "BEGIN {printf \"%.2f\", $total_height / $count}")
-avg_weight=$(awk "BEGIN {printf \"%.2f\", $total_weight / $count}")
-
-# Print summary
+# Display the CSV report
 echo "CSV Report generated at: $output_file"
 echo
 cat "$output_file"
 echo
-echo "Average Height: $avg_height m"
-echo "Average Weight: $avg_weight kg"
+
+# Calculate averages using awk
+if [ -s "$temp_data" ]; then
+    awk '
+    {
+        height_sum += $1
+        weight_sum += $2
+        count++
+    }
+    END {
+        if (count > 0) {
+            avg_height = height_sum / count
+            avg_weight = weight_sum / count
+            printf "Average Height: %.2f m\n", avg_height
+            printf "Average Weight: %.2f kg\n", avg_weight
+        } else {
+            print "No valid Pokémon data found."
+        }
+    }' "$temp_data"
+else
+    echo "No valid Pokémon data found for calculations."
+fi
+
+# Clean up temporary file
+rm -f "$temp_data"
